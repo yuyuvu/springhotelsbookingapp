@@ -1,0 +1,9 @@
+* text=auto
+**/mvnw text eol=lf
+*.cmd text eol=crlf
+*.sh text eol=lf
+**/Dockerfile text eol=lf
+*.java text eol=lf
+*.sql text eol=lf
+*.properties text eol=lf
+*.pem text eol=lf

@@ -1,0 +1,82 @@
+name: spring-hotels-booking
+# Общие настройки контейнеров приложений, которые ограничивают права процесса и позволяют записывать данные только во временную папку.
+x-runtime: &runtime
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:size=128m,mode=1777
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  stop_grace_period: 30s
+  mem_limit: 768m
+  # Указываем адрес Eureka в сети Compose, по которому приложения будут регистрироваться и получать адреса других сервисов.
+  environment: &environment
+    EUREKA_URL: http://eurekalogin:eurekapassword@discovery-server:8761/eureka/
+services:
+  # Сначала запускаем Eureka, так как остальным приложениям нужен работающий реестр для регистрации и поиска адресов.
+  discovery-server:
+    <<: *runtime
+    build: ./discovery-server
+    ports:
+      # Открываем доступ к Eureka только с этого компьютера, для входа используются служебные логин и пароль.
+      - '127.0.0.1:8761:8761'
+    environment:
+      <<: *environment
+      EUREKA_HOST: discovery-server
+  # Сервис для отелей, номеров и календаря доступен другим приложениям внутри Docker-сети без отдельного внешнего порта.
+  hotel-service:
+    <<: *runtime
+    build: ./hotel-service
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+  # Сервис для пользователей и бронирований обращается к отелю при занятии номера, поэтому запускается после его готовности.
+  booking-service:
+    <<: *runtime
+    build: ./booking-service
+    environment:
+      <<: *environment
+      # Для обращения указываем имя сервиса отелей, фактический адрес и порт будут получены через Eureka.
+      HOTEL_URL: http://hotel-service
+      HOTEL_DISCOVERY: 'true'
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+      hotel-service:
+        condition: service_healthy
+  # Шлюз принимает внешние запросы к API и документации Swagger, затем направляет их нужному сервису.
+  api-gateway:
+    <<: *runtime
+    build: ./api-gateway
+    ports:
+      - '127.0.0.1:${GATEWAY_PORT:-8080}:8080'
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+      hotel-service:
+        condition: service_healthy
+      booking-service:
+        condition: service_healthy
+      integration-tests:
+        # Ожидаем успешного завершения контейнера с тестами перед запуском шлюза, чтобы ошибку проверки нельзя было пропустить.
+        condition: service_completed_successfully
+  # Для интеграционных тестов запускаются отдельные процессы и базы, чтобы проверки не изменяли демонстрационные данные основных приложений.
+  integration-tests:
+    init: true
+    read_only: true
+    build:
+      context: ./system-tests
+      # Передаём образы собранных сервисов в сборку тестового контейнера, чтобы он получил готовые JAR каждого приложения.
+      additional_contexts:
+        hotel_image: service:hotel-service
+        booking_image: service:booking-service
+        gateway_image: service:api-gateway
+        discovery_image: service:discovery-server
+    mem_limit: 2g
+    # Выделяем временные папки для результатов тестов и блокировок Maven, так как остальная файловая система контейнера доступна только для чтения.
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+      - /workspace/target:size=128m,uid=10001,gid=10001,mode=0770
+      - /opt/m2/.locks:size=16m,uid=10001,gid=10001,mode=0770
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
